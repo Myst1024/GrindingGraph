@@ -1,0 +1,8 @@
+## Interface: 11509, 16001
+## Title: GrindingGraph
+## Notes: Shows the XP gained from your most recent mob kill.
+## Author: Gunnar
+## Version: 0.1.0
+## SavedVariables: GrindingGraphDB
+
+GrindingGraph.lua
