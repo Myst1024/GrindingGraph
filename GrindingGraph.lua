@@ -4,6 +4,7 @@ local DEFAULTS = {
     point = "CENTER", relativePoint = "CENTER", x = 0, y = 200,
     width = 300, height = 160,
     locked = false,
+    minimized = false,
     minutes = 30,
     bucketMinutes = 1,
 }
@@ -103,7 +104,8 @@ local function UpdateXPBar()
     -- Only add the rested amount if it still fits in the bar
     if rested > 0 then
         xpText:SetText(text .. ("  +%d rested"):format(rested))
-        if xpText:GetStringWidth() > w - 4 then xpText:SetText(text) end
+        -- Centered text must also clear the minimize button overlaid on the right end
+        if xpText:GetStringWidth() > w - 2 * XPBAR_HEIGHT - 4 then xpText:SetText(text) end
     end
 end
 
@@ -559,16 +561,21 @@ StaticPopupDialogs["GRINDINGGRAPH_RESTART"] = {
 pauseButton:SetScript("OnClick", TogglePause)
 restartButton:SetScript("OnClick", function() StaticPopup_Show("GRINDINGGRAPH_RESTART") end)
 
+-- Minimized, the box is just the XP bar
+local MINIMIZED_HEIGHT = XPBAR_INSET * 2 + XPBAR_HEIGHT
+
 local function SaveLayout()
     local point, _, relativePoint, x, y = frame:GetPoint(1)
     db.point, db.relativePoint, db.x, db.y = point, relativePoint, x, y
-    db.width, db.height = frame:GetWidth(), frame:GetHeight()
+    db.width = frame:GetWidth()
+    -- Keep the expanded height so restoring brings the graph back at its old size
+    if not db.minimized then db.height = frame:GetHeight() end
 end
 
 local function ApplyLayout()
     frame:ClearAllPoints()
     frame:SetPoint(db.point, UIParent, db.relativePoint, db.x, db.y)
-    frame:SetSize(db.width, db.height)
+    frame:SetSize(db.width, db.minimized and MINIMIZED_HEIGHT or db.height)
 end
 
 -- Dragging
@@ -602,9 +609,39 @@ grip:SetScript("OnMouseUp", function()
     SaveLayout()
 end)
 
-local function ApplyLock()
-    grip:SetShown(not db.locked)
+-- Minimize / restore button overlaid on the right end of the XP bar, drawn as ^ / v
+local minimizeButton = CreateFrame("Button", nil, xpBar)
+minimizeButton:SetSize(XPBAR_HEIGHT, XPBAR_HEIGHT)
+minimizeButton:SetPoint("RIGHT", xpBar, "RIGHT", 0, 0)
+minimizeButton:SetFrameLevel(xpBar:GetFrameLevel() + 2)
+local minimizeText = minimizeButton:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+minimizeText:SetPoint("CENTER")
+minimizeText:SetTextColor(0.7, 0.7, 0.7)
+minimizeButton:SetScript("OnEnter", function() minimizeText:SetTextColor(1, 1, 1) end)
+minimizeButton:SetScript("OnLeave", function() minimizeText:SetTextColor(0.7, 0.7, 0.7) end)
+
+-- Shows or hides the graph portion and the resize grip to match db.minimized and db.locked
+local function ApplyVisibility()
+    local expanded = not db.minimized
+    for _, region in ipairs({ title, summary, plot, windowPicker, bucketPicker, pauseButton, restartButton }) do
+        region:SetShown(expanded)
+    end
+    for _, label in ipairs(yLabels) do label:SetShown(expanded) end
+    grip:SetShown(expanded and not db.locked)
+    minimizeText:SetText(expanded and "^" or "v")
 end
+
+minimizeButton:SetScript("OnClick", function()
+    -- Pin the top-left corner so the box collapses/expands downward from where it is
+    local left, top = frame:GetLeft(), frame:GetTop()
+    frame:ClearAllPoints()
+    frame:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", left, top)
+    db.minimized = not db.minimized
+    frame:SetHeight(db.minimized and MINIMIZED_HEIGHT or db.height)
+    SaveLayout()
+    ApplyVisibility()
+    Render()
+end)
 
 local function OnKillXP(msg)
     local _, amount = msg:match(KILL_PATTERN)
@@ -644,7 +681,7 @@ frame:SetScript("OnEvent", function(self, event, arg1)
         charDB.pauses = charDB.pauses or {}
         PruneHistory(time())
         ApplyLayout()
-        ApplyLock()
+        ApplyVisibility()
         UpdatePauseButton()
         SampleRested()
         Render()
@@ -666,12 +703,12 @@ SlashCmdList.GRINDINGGRAPH = function(msg)
     local cmd, arg = msg:match("^(%S*)%s*(.-)$")
     if cmd == "lock" or cmd == "unlock" then
         db.locked = (cmd == "lock")
-        ApplyLock()
+        ApplyVisibility()
         print("GrindingGraph: " .. (db.locked and "locked" or "unlocked"))
     elseif cmd == "reset" then
         for k, v in pairs(DEFAULTS) do db[k] = v end
         ApplyLayout()
-        ApplyLock()
+        ApplyVisibility()
         Render()
         print("GrindingGraph: position, size and window reset")
     elseif cmd == "minutes" then
