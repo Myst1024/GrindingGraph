@@ -1,8 +1,9 @@
 ## Interface: 11509, 16001
 ## Title: GrindingGraph
-## Notes: Shows the XP gained from your most recent mob kill.
+## Notes: Charts XP gained from mob kills per minute.
 ## Author: Gunnar
 ## Version: 0.1.0
 ## SavedVariables: GrindingGraphDB
+## SavedVariablesPerCharacter: GrindingGraphCharDB
 
 GrindingGraph.lua
