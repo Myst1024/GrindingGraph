@@ -5,10 +5,12 @@ local DEFAULTS = {
     width = 300, height = 160,
     locked = false,
     minutes = 30,
+    bucketMinutes = 1,
 }
 
 local MIN_W, MIN_H, MAX_W, MAX_H = 160, 100, 1200, 600
-local MAX_MINUTES = 120
+local MIN_MINUTES, MAX_MINUTES = 10, 120
+local MAX_BUCKET_MINUTES = 5
 
 -- XP bar across the top of the box
 local XPBAR_INSET, XPBAR_HEIGHT = 4, 14
@@ -137,64 +139,73 @@ local function GetBar(i)
     return bar
 end
 
--- Clickable "30 Minutes" label under the chart that opens a small window-size picker
-local WINDOW_CHOICES = { 5, 10, 15, 30, 60 }
+-- Clickable label under the chart that opens a small menu of choices for db[key].
+-- Render() keeps the label text in sync via picker:Refresh().
+local function CreatePicker(key, choices, format)
+    local button = CreateFrame("Button", nil, frame)
+    button:SetHeight(PAD_BOTTOM - 2)
+    local label = button:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    label:SetPoint("CENTER")
+    label:SetTextColor(0.7, 0.7, 0.7)
+    button:SetScript("OnEnter", function() label:SetTextColor(1, 1, 1) end)
+    button:SetScript("OnLeave", function() label:SetTextColor(0.7, 0.7, 0.7) end)
 
-local windowButton = CreateFrame("Button", nil, frame)
-windowButton:SetPoint("TOP", plot, "BOTTOM", 0, -1)
-windowButton:SetHeight(PAD_BOTTOM - 2)
-local windowText = windowButton:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-windowText:SetPoint("CENTER")
-windowText:SetTextColor(0.7, 0.7, 0.7)
-windowButton:SetScript("OnEnter", function() windowText:SetTextColor(1, 1, 1) end)
-windowButton:SetScript("OnLeave", function() windowText:SetTextColor(0.7, 0.7, 0.7) end)
+    local menu = CreateFrame("Frame", nil, button, BackdropTemplateMixin and "BackdropTemplate" or nil)
+    menu:SetFrameStrata("DIALOG")
+    menu:SetPoint("TOP", button, "BOTTOM", 0, -2)
+    menu:SetSize(90, #choices * 16 + 8)
+    menu:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8x8",
+        edgeFile = "Interface\\Buttons\\WHITE8x8",
+        edgeSize = 1,
+    })
+    menu:SetBackdropColor(0, 0, 0, 0.9)
+    menu:SetBackdropBorderColor(1, 1, 1, 0.25)
+    menu:SetClampedToScreen(true)
+    menu:Hide()
 
-local windowMenu = CreateFrame("Frame", nil, windowButton, BackdropTemplateMixin and "BackdropTemplate" or nil)
-windowMenu:SetFrameStrata("DIALOG")
-windowMenu:SetPoint("TOP", windowButton, "BOTTOM", 0, -2)
-windowMenu:SetSize(90, #WINDOW_CHOICES * 16 + 8)
-windowMenu:SetBackdrop({
-    bgFile = "Interface\\Buttons\\WHITE8x8",
-    edgeFile = "Interface\\Buttons\\WHITE8x8",
-    edgeSize = 1,
-})
-windowMenu:SetBackdropColor(0, 0, 0, 0.9)
-windowMenu:SetBackdropBorderColor(1, 1, 1, 0.25)
-windowMenu:SetClampedToScreen(true)
-windowMenu:Hide()
-
-local function SetWindowMinutes(n)
-    db.minutes = n
-    windowMenu:Hide()
-    Render()
-end
-
-local windowOptions = {}
-for i, n in ipairs(WINDOW_CHOICES) do
-    local option = CreateFrame("Button", nil, windowMenu)
-    option:SetPoint("TOPLEFT", 4, -4 - (i - 1) * 16)
-    option:SetPoint("TOPRIGHT", -4, -4 - (i - 1) * 16)
-    option:SetHeight(16)
-    option:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
-    local text = option:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    text:SetPoint("CENTER")
-    text:SetText(n .. " Minutes")
-    option.text, option.minutes = text, n
-    option:SetScript("OnClick", function() SetWindowMinutes(n) end)
-    windowOptions[i] = option
-end
-
-windowButton:SetScript("OnClick", function()
-    -- Highlight the current choice in gold
-    for _, option in ipairs(windowOptions) do
-        if option.minutes == db.minutes then
-            option.text:SetTextColor(1, 0.82, 0)
-        else
-            option.text:SetTextColor(1, 1, 1)
-        end
+    local options = {}
+    for i, n in ipairs(choices) do
+        local option = CreateFrame("Button", nil, menu)
+        option:SetPoint("TOPLEFT", 4, -4 - (i - 1) * 16)
+        option:SetPoint("TOPRIGHT", -4, -4 - (i - 1) * 16)
+        option:SetHeight(16)
+        option:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
+        local text = option:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        text:SetPoint("CENTER")
+        text:SetText(format(n))
+        option.text, option.value = text, n
+        option:SetScript("OnClick", function()
+            db[key] = n
+            menu:Hide()
+            Render()
+        end)
+        options[i] = option
     end
-    windowMenu:SetShown(not windowMenu:IsShown())
-end)
+
+    button:SetScript("OnClick", function()
+        -- Highlight the current choice in gold
+        for _, option in ipairs(options) do
+            if option.value == db[key] then
+                option.text:SetTextColor(1, 0.82, 0)
+            else
+                option.text:SetTextColor(1, 1, 1)
+            end
+        end
+        menu:SetShown(not menu:IsShown())
+    end)
+
+    function button:Refresh()
+        label:SetText(format(db[key]))
+        self:SetWidth(label:GetStringWidth() + 8)
+    end
+    return button
+end
+
+local windowPicker = CreatePicker("minutes", { 10, 15, 30, 60 }, function(n) return n .. " Min Range" end)
+windowPicker:SetPoint("TOP", plot, "BOTTOM", 0, -1)
+local bucketPicker = CreatePicker("bucketMinutes", { 1, 3, 5 }, function(n) return n .. " Min Bars" end)
+bucketPicker:SetPoint("LEFT", windowPicker, "RIGHT", 4, 0)
 
 -- y-axis: gridlines + labels at 0, 50% and 100% of the scale
 for i = 1, 3 do
@@ -255,9 +266,10 @@ local function ActiveMinutes(now, count)
     return list
 end
 
--- Drop kills and pauses older than the largest window we could ever show
+-- Drop kills and pauses older than the largest window we could ever show (plus slack for the
+-- oldest bar's bucket starting before the window)
 local function PruneHistory(now)
-    local active = ActiveMinutes(now, MAX_MINUTES)
+    local active = ActiveMinutes(now, MAX_MINUTES + MAX_BUCKET_MINUTES - 1)
     local cutoff = active[#active] * 60
     for _, list in ipairs({ charDB.kills, charDB.pauses }) do
         local keep = 1
@@ -305,6 +317,30 @@ local function NewestBucketDuration(active, now)
     return math.max(0, stopAt - m * 60) / 60
 end
 
+-- Groups active minutes into display bars of `size` minutes. Groups are pinned to the clock
+-- (minute m belongs to group floor(m / size)) so a kill never moves between bars. Fully paused
+-- minutes are skipped, so a bar can cover fewer than `size` minutes.
+-- Returns barOf (minute -> bar index, 0 = newest) and barXP (bar index -> total XP).
+local function BuildBars(now, count, size)
+    local barOf, barXP = {}, {}
+    local bar, lastGroup = -1, nil
+    for _, m in ipairs(ActiveMinutes(now, count * size)) do
+        local group = math.floor(m / size)
+        if group ~= lastGroup then
+            if bar + 1 >= count then break end
+            bar, lastGroup = bar + 1, group
+            barXP[bar] = 0
+        end
+        barOf[m] = bar
+    end
+    for i = bar + 1, count - 1 do barXP[i] = 0 end
+    for _, kill in ipairs(charDB.kills) do
+        local i = barOf[math.floor(kill.t / 60)]
+        if i then barXP[i] = barXP[i] + kill.xp end
+    end
+    return barOf, barXP
+end
+
 local function FormatDuration(minutes)
     if minutes < 1 then return "<1m" end
     minutes = math.floor(minutes + 0.5)
@@ -333,14 +369,12 @@ function Render()
     local buckets, baseBuckets, killCount = BuildBuckets(active)
 
     -- Average over buckets from the oldest one with XP up to now, ignoring leading empty minutes
-    local peak, total, baseTotal, oldest = 0, 0, 0, nil
+    local total, baseTotal, oldest = 0, 0, nil
     for i = 0, minutes - 1 do
-        peak = math.max(peak, buckets[i])
         total = total + buckets[i]
         baseTotal = baseTotal + baseBuckets[i]
         if buckets[i] > 0 then oldest = i end
     end
-    local scale = NiceCeil(peak)
     -- Elapsed active minutes from the start of the oldest bucket with XP until now, counting only the
     -- part of the current minute that has passed. At least 1 so a single early kill doesn't spike the rate.
     local elapsed = oldest and math.max(1, oldest + NewestBucketDuration(active, now)) or 1
@@ -350,8 +384,18 @@ function Render()
     local baseXPPerKill = killCount > 0 and baseTotal / killCount or 0
     title:SetText("Level in: " .. EstimateLevelUp(baseRate, baseXPPerKill))
 
+    windowPicker:Refresh()
+    bucketPicker:Refresh()
+
     local plotW, plotH = plot:GetWidth(), plot:GetHeight()
     if plotW <= 0 or plotH <= 0 then return end
+
+    -- The chart shows total XP per bar; bars can span several minutes
+    local barCount = math.ceil(minutes / db.bucketMinutes)
+    local barOf, barXP = BuildBars(now, barCount, db.bucketMinutes)
+    local peak = 0
+    for i = 0, barCount - 1 do peak = math.max(peak, barXP[i]) end
+    local scale = NiceCeil(peak)
 
     for i = 1, 3 do
         local frac = (i - 1) / 2
@@ -368,16 +412,18 @@ function Render()
     -- XP still falling isn't part of its bar yet (the scale above already includes it, so the
     -- axis doesn't jump when the chunk lands)
     local pending = {}
-    for _, c in ipairs(chunks) do pending[c.minute] = (pending[c.minute] or 0) + c.xp end
+    for _, c in ipairs(chunks) do
+        local i = barOf[c.minute]
+        if i then pending[i] = (pending[i] or 0) + c.xp end
+    end
 
     -- Bars fill from the right edge (now) leftward (older)
-    local slot = plotW / minutes
+    local slot = plotW / barCount
     local barW = math.max(1, slot - (slot > 4 and 1 or 0))
-    layout = { index = {}, tops = {}, slot = slot, barW = barW, plotW = plotW, plotH = plotH, scale = scale }
-    for i = 0, minutes - 1 do
+    layout = { index = barOf, tops = {}, slot = slot, barW = barW, plotW = plotW, plotH = plotH, scale = scale }
+    for i = 0, barCount - 1 do
         local bar = GetBar(i + 1)
-        local h = math.max(0, buckets[i] - (pending[active[i + 1]] or 0)) / scale * plotH
-        layout.index[active[i + 1]] = i
+        local h = math.max(0, barXP[i] - (pending[i] or 0)) / scale * plotH
         layout.tops[i] = h
         if h >= 1 then
             bar:ClearAllPoints()
@@ -388,10 +434,7 @@ function Render()
             bar:Hide()
         end
     end
-    for i = minutes + 1, #bars do bars[i]:Hide() end
-
-    windowText:SetText(minutes .. " Minutes")
-    windowButton:SetWidth(windowText:GetStringWidth() + 8)
+    for i = barCount + 1, #bars do bars[i]:Hide() end
 end
 
 -- Falling XP chunks: each new kill drops from the top of the chart and lands on its bar
@@ -594,6 +637,7 @@ frame:SetScript("OnEvent", function(self, event, arg1)
         for k, v in pairs(DEFAULTS) do
             if db[k] == nil then db[k] = v end
         end
+        db.minutes = math.max(MIN_MINUTES, db.minutes)
         GrindingGraphCharDB = GrindingGraphCharDB or {}
         charDB = GrindingGraphCharDB
         charDB.kills = charDB.kills or {}
@@ -632,12 +676,21 @@ SlashCmdList.GRINDINGGRAPH = function(msg)
         print("GrindingGraph: position, size and window reset")
     elseif cmd == "minutes" then
         local n = tonumber(arg)
-        if n and n >= 5 and n <= MAX_MINUTES then
+        if n and n >= MIN_MINUTES and n <= MAX_MINUTES then
             db.minutes = math.floor(n)
             Render()
             print("GrindingGraph: showing last " .. db.minutes .. " minutes")
         else
-            print("GrindingGraph: usage /gg minutes <5-" .. MAX_MINUTES .. ">")
+            print("GrindingGraph: usage /gg minutes <" .. MIN_MINUTES .. "-" .. MAX_MINUTES .. ">")
+        end
+    elseif cmd == "bars" then
+        local n = tonumber(arg)
+        if n and n >= 1 and n <= MAX_BUCKET_MINUTES then
+            db.bucketMinutes = math.floor(n)
+            Render()
+            print("GrindingGraph: " .. db.bucketMinutes .. " minute bars")
+        else
+            print("GrindingGraph: usage /gg bars <1-" .. MAX_BUCKET_MINUTES .. ">")
         end
     elseif cmd == "pause" or cmd == "resume" then
         if (cmd == "pause") ~= (CurrentPause() ~= nil) then TogglePause() end
@@ -649,6 +702,6 @@ SlashCmdList.GRINDINGGRAPH = function(msg)
         frame:SetShown(cmd == "show")
         Render()
     else
-        print("GrindingGraph commands: /gg lock | unlock | reset | minutes <n> | pause | resume | restart | show | hide")
+        print("GrindingGraph commands: /gg lock | unlock | reset | minutes <n> | bars <n> | pause | resume | restart | show | hide")
     end
 end
