@@ -123,8 +123,21 @@ local plot = CreateFrame("Frame", nil, frame)
 plot:SetPoint("TOPLEFT", PAD_LEFT, -PAD_TOP)
 plot:SetPoint("BOTTOMRIGHT", -PAD_RIGHT, PAD_BOTTOM)
 
-local bars, gridLines, yLabels = {}, {}, {}
+local bars, gridLines, yLabels, dividers = {}, {}, {}, {}
 local Render
+
+-- Kill segments thinner than this (in pixels) aren't separated by a divider
+local MIN_SEGMENT_PX = 3
+
+local function GetDivider(i)
+    local divider = dividers[i]
+    if not divider then
+        divider = plot:CreateTexture(nil, "ARTWORK", nil, 1)
+        divider:SetColorTexture(0, 0, 0, 0.2)
+        dividers[i] = divider
+    end
+    return divider
+end
 
 -- XP chunks still falling into their bar; their XP isn't drawn in the bar until they land
 local chunks = {}
@@ -322,9 +335,10 @@ end
 -- Groups active minutes into display bars of `size` minutes. Groups are pinned to the clock
 -- (minute m belongs to group floor(m / size)) so a kill never moves between bars. Fully paused
 -- minutes are skipped, so a bar can cover fewer than `size` minutes.
--- Returns barOf (minute -> bar index, 0 = newest) and barXP (bar index -> total XP).
+-- Returns barOf (minute -> bar index, 0 = newest), barXP (bar index -> total XP) and
+-- barKills (bar index -> list of kill XP, oldest first).
 local function BuildBars(now, count, size)
-    local barOf, barXP = {}, {}
+    local barOf, barXP, barKills = {}, {}, {}
     local bar, lastGroup = -1, nil
     for _, m in ipairs(ActiveMinutes(now, count * size)) do
         local group = math.floor(m / size)
@@ -336,11 +350,15 @@ local function BuildBars(now, count, size)
         barOf[m] = bar
     end
     for i = bar + 1, count - 1 do barXP[i] = 0 end
+    for i = 0, count - 1 do barKills[i] = {} end
     for _, kill in ipairs(charDB.kills) do
         local i = barOf[math.floor(kill.t / 60)]
-        if i then barXP[i] = barXP[i] + kill.xp end
+        if i then
+            barXP[i] = barXP[i] + kill.xp
+            table.insert(barKills[i], kill.xp)
+        end
     end
-    return barOf, barXP
+    return barOf, barXP, barKills
 end
 
 local function FormatDuration(minutes)
@@ -394,7 +412,7 @@ function Render()
 
     -- The chart shows total XP per bar; bars can span several minutes
     local barCount = math.ceil(minutes / db.bucketMinutes)
-    local barOf, barXP = BuildBars(now, barCount, db.bucketMinutes)
+    local barOf, barXP, barKills = BuildBars(now, barCount, db.bucketMinutes)
     local peak = 0
     for i = 0, barCount - 1 do peak = math.max(peak, barXP[i]) end
     local scale = NiceCeil(peak)
@@ -413,30 +431,52 @@ function Render()
 
     -- XP still falling isn't part of its bar yet (the scale above already includes it, so the
     -- axis doesn't jump when the chunk lands)
-    local pending = {}
+    -- Falling chunks are always a bar's newest kills, so they're the last entries in barKills
+    local pending, pendingCount = {}, {}
     for _, c in ipairs(chunks) do
         local i = barOf[c.minute]
-        if i then pending[i] = (pending[i] or 0) + c.xp end
+        if i then
+            pending[i] = (pending[i] or 0) + c.xp
+            pendingCount[i] = (pendingCount[i] or 0) + 1
+        end
     end
 
     -- Bars fill from the right edge (now) leftward (older)
     local slot = plotW / barCount
     local barW = math.max(1, slot - (slot > 4 and 1 or 0))
     layout = { index = barOf, tops = {}, slot = slot, barW = barW, plotW = plotW, plotH = plotH, scale = scale }
+    local dividerCount = 0
     for i = 0, barCount - 1 do
         local bar = GetBar(i + 1)
         local h = math.max(0, barXP[i] - (pending[i] or 0)) / scale * plotH
+        local x = plotW - (i + 1) * slot
         layout.tops[i] = h
         if h >= 1 then
             bar:ClearAllPoints()
-            bar:SetPoint("BOTTOMLEFT", plot, "BOTTOMLEFT", plotW - (i + 1) * slot, 0)
+            bar:SetPoint("BOTTOMLEFT", plot, "BOTTOMLEFT", x, 0)
             bar:SetSize(barW, h)
             bar:Show()
+            -- A thin divider on top of each landed kill except the topmost one, so every kill reads as
+            -- its own stacked segment. Dividers are skipped where segments are too thin to separate.
+            local y, lastY = 0, 0
+            for k = 1, #barKills[i] - (pendingCount[i] or 0) - 1 do
+                y = y + barKills[i][k] / scale * plotH
+                if y - lastY >= MIN_SEGMENT_PX and h - y >= MIN_SEGMENT_PX then
+                    dividerCount = dividerCount + 1
+                    local divider = GetDivider(dividerCount)
+                    divider:ClearAllPoints()
+                    divider:SetPoint("BOTTOMLEFT", plot, "BOTTOMLEFT", x, y)
+                    divider:SetSize(barW, 1)
+                    divider:Show()
+                    lastY = y
+                end
+            end
         else
             bar:Hide()
         end
     end
     for i = barCount + 1, #bars do bars[i]:Hide() end
+    for i = dividerCount + 1, #dividers do dividers[i]:Hide() end
 end
 
 -- Falling XP chunks: each new kill drops from the top of the chart and lands on its bar
