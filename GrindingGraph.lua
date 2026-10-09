@@ -122,6 +122,11 @@ plot:SetPoint("BOTTOMRIGHT", -PAD_RIGHT, PAD_BOTTOM)
 local bars, gridLines, yLabels = {}, {}, {}
 local Render
 
+-- XP chunks still falling into their bar; their XP isn't drawn in the bar until they land
+local chunks = {}
+-- Bar geometry from the last Render, used to animate chunks between renders
+local layout
+
 local function GetBar(i)
     local bar = bars[i]
     if not bar then
@@ -360,12 +365,20 @@ function Render()
         yLabels[i]:SetText(ShortNumber(scale * frac))
     end
 
+    -- XP still falling isn't part of its bar yet (the scale above already includes it, so the
+    -- axis doesn't jump when the chunk lands)
+    local pending = {}
+    for _, c in ipairs(chunks) do pending[c.minute] = (pending[c.minute] or 0) + c.xp end
+
     -- Bars fill from the right edge (now) leftward (older)
     local slot = plotW / minutes
     local barW = math.max(1, slot - (slot > 4 and 1 or 0))
+    layout = { index = {}, tops = {}, slot = slot, barW = barW, plotW = plotW, plotH = plotH, scale = scale }
     for i = 0, minutes - 1 do
         local bar = GetBar(i + 1)
-        local h = buckets[i] / scale * plotH
+        local h = math.max(0, buckets[i] - (pending[active[i + 1]] or 0)) / scale * plotH
+        layout.index[active[i + 1]] = i
+        layout.tops[i] = h
         if h >= 1 then
             bar:ClearAllPoints()
             bar:SetPoint("BOTTOMLEFT", plot, "BOTTOMLEFT", plotW - (i + 1) * slot, 0)
@@ -379,6 +392,60 @@ function Render()
 
     windowText:SetText(minutes .. " Minutes")
     windowButton:SetWidth(windowText:GetStringWidth() + 8)
+end
+
+-- Falling XP chunks: each new kill drops from the top of the chart and lands on its bar
+local FALL_TIME = 0.6 -- seconds for a fall the full height of the chart
+local chunkPool = {}
+
+local function ReleaseChunk(c)
+    c.tex:Hide()
+    table.insert(chunkPool, c.tex)
+end
+
+local function AnimateChunks()
+    if not layout then return end
+    local now, landed = GetTime(), false
+    for k = #chunks, 1, -1 do
+        local c = chunks[k]
+        local i = layout.index[c.minute]
+        local h = c.xp / layout.scale * layout.plotH
+        local target = i and layout.tops[i]
+        if not c.startY and target then
+            -- Start with the chunk's top at the top of the chart; fall time grows with distance (gravity)
+            c.startY = math.max(target, layout.plotH - h)
+            c.duration = FALL_TIME * math.sqrt((c.startY - target) / layout.plotH)
+            c.startTime = now
+        end
+        local p = target and c.duration > 0 and math.min(1, (now - c.startTime) / c.duration) or 1
+        if p >= 1 then
+            ReleaseChunk(c)
+            table.remove(chunks, k)
+            landed = true
+        else
+            local y = c.startY - (c.startY - target) * p * p
+            c.tex:ClearAllPoints()
+            c.tex:SetPoint("BOTTOMLEFT", plot, "BOTTOMLEFT", layout.plotW - (i + 1) * layout.slot, y)
+            c.tex:SetSize(layout.barW, math.max(1, h))
+            c.tex:Show()
+        end
+    end
+    if landed then Render() end
+    if #chunks == 0 then plot:SetScript("OnUpdate", nil) end
+end
+
+local function DropChunk(t, xp)
+    local tex = table.remove(chunkPool) or plot:CreateTexture(nil, "OVERLAY")
+    tex:SetColorTexture(0.85, 0.75, 1, 1)
+    tex:Hide()
+    table.insert(chunks, { minute = math.floor(t / 60), xp = xp, tex = tex })
+    plot:SetScript("OnUpdate", AnimateChunks)
+end
+
+local function ClearChunks()
+    for _, c in ipairs(chunks) do ReleaseChunk(c) end
+    wipe(chunks)
+    plot:SetScript("OnUpdate", nil)
 end
 
 -- Pause / Resume and Restart text buttons in the bottom-left corner
@@ -429,6 +496,7 @@ local function TogglePause()
 end
 
 local function RestartSession()
+    ClearChunks()
     wipe(charDB.kills)
     wipe(charDB.pauses)
     UpdatePauseButton()
@@ -501,8 +569,10 @@ local function OnKillXP(msg)
     amount = tonumber((amount:gsub(",", "")))
     if not amount or CurrentPause() then return end
     local bonus = EstimateRestedBonus(amount)
-    table.insert(charDB.kills, { t = time(), xp = amount, bonus = bonus })
-    PruneHistory(time())
+    local t = time()
+    table.insert(charDB.kills, { t = t, xp = amount, bonus = bonus })
+    DropChunk(t, amount)
+    PruneHistory(t)
     Render()
 end
 
