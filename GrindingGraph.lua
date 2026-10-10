@@ -5,6 +5,7 @@ local DEFAULTS = {
     width = 300, height = 160,
     locked = false,
     minimized = false,
+    ratePerHour = false,
     minutes = 30,
     bucketMinutes = 1,
 }
@@ -117,6 +118,12 @@ title:SetTextColor(0.8, 0.8, 0.8)
 local summary = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 summary:SetPoint("TOPRIGHT", -6, -HEADER_TOP)
 summary:SetJustifyH("RIGHT")
+
+-- Clicking the average toggles between XP per minute and XP per hour
+local summaryButton = CreateFrame("Button", nil, frame)
+summaryButton:SetAllPoints(summary)
+summaryButton:SetScript("OnEnter", function() summary:SetTextColor(1, 1, 1) end)
+summaryButton:SetScript("OnLeave", function() summary:SetTextColor(GameFontHighlightSmall:GetTextColor()) end)
 
 -- The plot area; bars, gridlines and axis labels are positioned relative to it
 local plot = CreateFrame("Frame", nil, frame)
@@ -400,7 +407,11 @@ function Render()
     local elapsed = oldest and math.max(1, oldest + NewestBucketDuration(active, now)) or 1
     local avg = oldest and total / elapsed or 0
     local baseRate = oldest and baseTotal / elapsed or 0
-    summary:SetText(("avg %s xp / min"):format(ShortNumber(avg)))
+    if db.ratePerHour then
+        summary:SetText(("%s xp / hr"):format(ShortNumber(avg * 60)))
+    else
+        summary:SetText(("%s xp / min"):format(ShortNumber(avg)))
+    end
     local baseXPPerKill = killCount > 0 and baseTotal / killCount or 0
     title:SetText("Level in: " .. EstimateLevelUp(baseRate, baseXPPerKill))
 
@@ -663,13 +674,18 @@ minimizeButton:SetScript("OnLeave", function() minimizeText:SetTextColor(0.7, 0.
 -- Shows or hides the graph portion and the resize grip to match db.minimized and db.locked
 local function ApplyVisibility()
     local expanded = not db.minimized
-    for _, region in ipairs({ title, summary, plot, windowPicker, bucketPicker, pauseButton, restartButton }) do
+    for _, region in ipairs({ title, summary, summaryButton, plot, windowPicker, bucketPicker, pauseButton, restartButton }) do
         region:SetShown(expanded)
     end
     for _, label in ipairs(yLabels) do label:SetShown(expanded) end
     grip:SetShown(expanded and not db.locked)
     minimizeText:SetText(expanded and "^" or "v")
 end
+
+summaryButton:SetScript("OnClick", function()
+    db.ratePerHour = not db.ratePerHour
+    Render()
+end)
 
 minimizeButton:SetScript("OnClick", function()
     -- Pin the top-left corner so the box collapses/expands downward from where it is
