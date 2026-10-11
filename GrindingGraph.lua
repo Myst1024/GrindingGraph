@@ -17,6 +17,10 @@ local MAX_BUCKET_MINUTES = 5
 -- XP bar across the top of the box
 local XPBAR_INSET, XPBAR_HEIGHT = 4, 14
 
+-- Shared by the XP bar and the chart, so rested kills match the rested part of the XP bar
+local XP_COLOR = { 0.6, 0.4, 1, 0.9 }
+local RESTED_COLOR = { 0.25, 0.55, 1, 0.55 }
+
 -- Chart margins inside the frame: room for XP bar, title, y-axis labels and the window picker
 local HEADER_TOP = XPBAR_INSET + XPBAR_HEIGHT + 4
 local PAD_LEFT, PAD_RIGHT, PAD_TOP, PAD_BOTTOM = 34, 8, HEADER_TOP + 16, 16
@@ -78,12 +82,12 @@ xpBarBg:SetColorTexture(0, 0, 0, 0.5)
 local xpFill = xpBar:CreateTexture(nil, "ARTWORK")
 xpFill:SetPoint("TOPLEFT")
 xpFill:SetPoint("BOTTOMLEFT")
-xpFill:SetColorTexture(0.6, 0.4, 1, 0.9)
+xpFill:SetColorTexture(unpack(XP_COLOR))
 
 local restedFill = xpBar:CreateTexture(nil, "ARTWORK")
 restedFill:SetPoint("TOPLEFT", xpFill, "TOPRIGHT")
 restedFill:SetPoint("BOTTOMLEFT", xpFill, "BOTTOMRIGHT")
-restedFill:SetColorTexture(0.25, 0.55, 1, 0.55)
+restedFill:SetColorTexture(unpack(RESTED_COLOR))
 
 local xpText = xpBar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 xpText:SetPoint("CENTER")
@@ -151,13 +155,15 @@ local chunks = {}
 -- Bar geometry from the last Render, used to animate chunks between renders
 local layout
 
-local function GetBar(i)
+-- Bars are drawn as stacked segments: runs of consecutive normal kills in XP purple, runs of
+-- rested kills in the same blue as the rested part of the XP bar
+local function GetBarSegment(i, color)
     local bar = bars[i]
     if not bar then
         bar = plot:CreateTexture(nil, "ARTWORK")
-        bar:SetColorTexture(0.6, 0.4, 1, 0.9)
         bars[i] = bar
     end
+    bar:SetColorTexture(unpack(color))
     return bar
 end
 
@@ -343,7 +349,7 @@ end
 -- (minute m belongs to group floor(m / size)) so a kill never moves between bars. Fully paused
 -- minutes are skipped, so a bar can cover fewer than `size` minutes.
 -- Returns barOf (minute -> bar index, 0 = newest), barXP (bar index -> total XP) and
--- barKills (bar index -> list of kill XP, oldest first).
+-- barKills (bar index -> list of kills, oldest first).
 local function BuildBars(now, count, size)
     local barOf, barXP, barKills = {}, {}, {}
     local bar, lastGroup = -1, nil
@@ -362,7 +368,7 @@ local function BuildBars(now, count, size)
         local i = barOf[math.floor(kill.t / 60)]
         if i then
             barXP[i] = barXP[i] + kill.xp
-            table.insert(barKills[i], kill.xp)
+            table.insert(barKills[i], kill)
         end
     end
     return barOf, barXP, barKills
@@ -456,22 +462,40 @@ function Render()
     local slot = plotW / barCount
     local barW = math.max(1, slot - (slot > 4 and 1 or 0))
     layout = { index = barOf, tops = {}, slot = slot, barW = barW, plotW = plotW, plotH = plotH, scale = scale }
-    local dividerCount = 0
+    local dividerCount, segmentCount = 0, 0
+    local function DrawSegment(x, bottom, top, rested)
+        if top - bottom <= 0 then return end
+        segmentCount = segmentCount + 1
+        local segment = GetBarSegment(segmentCount, rested and RESTED_COLOR or XP_COLOR)
+        segment:ClearAllPoints()
+        segment:SetPoint("BOTTOMLEFT", plot, "BOTTOMLEFT", x, bottom)
+        segment:SetSize(barW, math.max(1, top - bottom))
+        segment:Show()
+    end
     for i = 0, barCount - 1 do
-        local bar = GetBar(i + 1)
+        local landed = #barKills[i] - (pendingCount[i] or 0)
         local h = math.max(0, barXP[i] - (pending[i] or 0)) / scale * plotH
         local x = plotW - (i + 1) * slot
         layout.tops[i] = h
         if h >= 1 then
-            bar:ClearAllPoints()
-            bar:SetPoint("BOTTOMLEFT", plot, "BOTTOMLEFT", x, 0)
-            bar:SetSize(barW, h)
-            bar:Show()
+            -- Merge consecutive kills of the same kind (rested or not) into one segment
+            local y, runStart, runRested = 0, 0, nil
+            for k = 1, landed do
+                local rested = (barKills[i][k].bonus or 0) > 0
+                if k > 1 and rested ~= runRested then
+                    DrawSegment(x, runStart, y, runRested)
+                    runStart = y
+                end
+                runRested = rested
+                y = y + barKills[i][k].xp / scale * plotH
+            end
+            DrawSegment(x, runStart, y, runRested)
             -- A thin divider on top of each landed kill except the topmost one, so every kill reads as
             -- its own stacked segment. Dividers are skipped where segments are too thin to separate.
-            local y, lastY = 0, 0
-            for k = 1, #barKills[i] - (pendingCount[i] or 0) - 1 do
-                y = y + barKills[i][k] / scale * plotH
+            local lastY = 0
+            y = 0
+            for k = 1, landed - 1 do
+                y = y + barKills[i][k].xp / scale * plotH
                 if y - lastY >= MIN_SEGMENT_PX and h - y >= MIN_SEGMENT_PX then
                     dividerCount = dividerCount + 1
                     local divider = GetDivider(dividerCount)
@@ -482,11 +506,9 @@ function Render()
                     lastY = y
                 end
             end
-        else
-            bar:Hide()
         end
     end
-    for i = barCount + 1, #bars do bars[i]:Hide() end
+    for i = segmentCount + 1, #bars do bars[i]:Hide() end
     for i = dividerCount + 1, #dividers do dividers[i]:Hide() end
 end
 
